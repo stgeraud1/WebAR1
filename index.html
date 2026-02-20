@@ -1,68 +1,266 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8"/>
-  <title>WebAR — PNG + 3D</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="power-preference" content="high-performance">
+  <title>WebAR - Optimized</title>
 
-  <!-- A-Frame & MindAR -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.2/dist/mindar-image-aframe.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.0.0/dist/aframe-extras.min.js"></script>
 
-  <!-- Animation mixer (jouer les animations GLB/GLTF) -->
-  <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.1/dist/aframe-extras.min.js"></script>
-
-  <!-- Votre logique -->
-  <script defer src="app.js"></script>
-
-  <!-- Plein écran + transparence -->
   <style>
-    html, body, a-scene, canvas {
-      margin: 0; padding: 0;
-      width: 100vw; height: 100vh;
-      overflow: hidden; background: transparent;
-      position: fixed; top: 0; left: 0;
+    body { margin: 0; overflow: hidden; font-family: sans-serif; }
+    #overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.9); z-index: 999;
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      transition: opacity 0.3s ease-out;
     }
-    video {
-      position: fixed !important; top: 0 !important; left: 0 !important;
-      width: 100vw !important; height: 100vh !important;
-      object-fit: cover !important; z-index: 0 !important;
+    #status { color: #fff; margin-bottom: 20px; text-align: center; padding: 0 20px;}
+    #start-btn {
+      padding: 15px 40px; font-size: 1.2rem; font-weight: bold;
+      color: white; background: #00D084; border: none; border-radius: 5px; 
+      cursor: pointer; display: none;
+      box-shadow: 0 0 10px rgba(0, 208, 132, 0.5);
     }
-    a-scene, canvas { z-index: 1 !important; background: transparent !important; }
-    .mindar-ui-overlay, .mindar-ui-loader { z-index: 2 !important; background: transparent !important; }
+    .hidden { opacity: 0; pointer-events: none; }
   </style>
+
+  <script>
+    // =================================================================
+    // SHADER CHROMAKEY OPTIMISÉ
+    // =================================================================
+    AFRAME.registerShader('chromakey', {
+      schema: {
+        src: {type: 'map', is: 'uniform'},
+        color: {default: {x: 0.1, y: 0.9, z: 0.2}, type: 'vec3', is: 'uniform'},
+        transparent: {default: true, is: 'uniform'}
+      },
+
+      init: function (data) {
+        var videoTexture = new THREE.VideoTexture(data.src);
+        videoTexture.minFilter = THREE.LinearFilter;
+        // Optimisation : Format RGBA direct pour éviter les conversions
+        videoTexture.format = THREE.RGBAFormat; 
+        
+        this.material = new THREE.ShaderMaterial({
+          uniforms: {
+            color: { type: 'c', value: new THREE.Color(data.color.x, data.color.y, data.color.z) },
+            src: { type: 't', value: videoTexture }
+          },
+          vertexShader: `
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            // Optimisation : Précision moyenne suffisante pour de la vidéo
+            precision mediump float; 
+            uniform vec3 color;
+            uniform sampler2D src;
+            varying vec2 vUv;
+            
+            void main() {
+              vec4 tex = texture2D(src, vUv);
+              float alpha = (length(tex.rgb - color) - 0.5) * 7.0;
+              gl_FragColor = vec4(tex.rgb, alpha);
+            }
+          `,
+          transparent: data.transparent,
+          side: THREE.FrontSide // Optimisation : On ne dessine que la face avant
+        });
+      },
+
+      update: function (data) {
+        this.material.uniforms.color.value.setRGB(data.color.x, data.color.y, data.color.z);
+      }
+    });
+
+    // =================================================================
+    // COMPOSANT DE CONTROLE (PERFORMANCE)
+    // =================================================================
+    AFRAME.registerComponent('smart-target', {
+      init: function() {
+        const el = this.el;
+        // Mise en cache des références DOM pour éviter les querySelector en boucle
+        this.video = el.dataset.videoId ? document.getElementById(el.dataset.videoId) : null;
+        this.audio = el.dataset.audioId ? document.getElementById(el.dataset.audioId) : null;
+
+        el.addEventListener('targetFound', () => {
+          // Lancement vidéo
+          if (this.video) {
+            this.video.style.display = 'block'; // Hack pour forcer le réveil sur certains Android
+            this.video.play();
+          }
+          // Lancement Audio
+          if (this.audio) {
+            this.audio.play();
+          }
+        });
+
+        el.addEventListener('targetLost', () => {
+          // Pause immédiate pour économiser le CPU
+          if (this.video) {
+            this.video.pause();
+          }
+          if (this.audio) {
+            this.audio.pause();
+          }
+        });
+      }
+    });
+  </script>
 </head>
+
 <body>
-  <a-scene
-    mindar-image="imageTargetSrc: ./targets/targets.mind;"
-    embedded
-    renderer="antialias: true; alpha: true;"
-    vr-mode-ui="enabled: false"
-    device-orientation-permission-ui="enabled: true"
-  >
-    <a-camera look-controls="enabled:false"></a-camera>
+  <div id="overlay">
+    <div id="status">Chargement optimisé...</div>
+    <button id="start-btn">DÉMARRER</button>
+  </div>
 
-    <!-- TARGET 0 : séquence PNG + (option) 3D -->
-    <a-entity
-      mindar-image-target="targetIndex: 0"
-      ar-target-loader="pngPrefix: ./animations/target0/frame_; fps: 12; unitWidth: 1; fit: width; modelsDir: ./models/target0/; audioPrefix: ./audio/target0/audio_; audioLoop: all; audioVolume: 1; audioNonPos: true;">
-    </a-entity>
+  <a-scene 
+    mindar-image="imageTargetSrc: ./assets/targets.mind; uiScanning: yes; maxTrack: 1; filterMinCF:0.0001; filterBeta: 0.001;" 
+    color-space="sRGB" 
+    renderer="colorManagement: true; physicallyCorrectLights: false; antialias: false; sortObjects: true; precision: mediump;" 
+    vr-mode-ui="enabled: false" 
+    device-orientation-permission-ui="enabled: false">
 
-        <!-- TARGET 1 : séquence PNG + (option) 3D -->
-    <a-entity
-      mindar-image-target="targetIndex: 1"
-      ar-target-loader="pngPrefix: ./animations/target1/frame_; fps: 12; unitWidth: 1; fit: width; modelsDir: ./models/target1/; audioPrefix: ./audio/target1/audio_; audioLoop: all; audioVolume: 1; audioNonPos: true;">
-    </a-entity>
+    <a-assets id="assets-loader" timeout="10000"></a-assets>
+    
+    <a-camera position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
+    
+    <a-entity id="targets-container"></a-entity>
 
-    <!-- TARGET 1 : uniquement 3D (exemple) -->
-    <!--
-    <a-entity
-      mindar-image-target="targetIndex: 1"
-      ar-target-loader="modelsDir: ./models/target1/; modelRot: 0 180 0; modelScale: 0.6 0.6 0.6">
-    </a-entity>
-    -->
-
-    <!-- Pour ajouter d'autres cibles, duplique un bloc ci-dessus en changeant targetIndex et chemins -->
   </a-scene>
+
+  <script>
+    const MAX_TARGETS = 10; 
+    const ASSETS_PATH = './assets/';
+    const assetsContainer = document.getElementById('assets-loader');
+    const targetsContainer = document.getElementById('targets-container');
+    const startBtn = document.getElementById('start-btn');
+    const statusText = document.getElementById('status');
+
+    // Fonction de cache simple pour éviter les requêtes réseau multiples
+    const cache = {};
+
+    async function checkFileExists(url) {
+      if (cache[url] !== undefined) return cache[url];
+      try { 
+        const res = await fetch(url, { method: 'HEAD' });
+        cache[url] = res.ok;
+        return res.ok;
+      } catch { 
+        cache[url] = false;
+        return false; 
+      }
+    }
+
+    async function initExperience() {
+      let count = 0;
+      
+      // Fragment de document pour n'écrire dans le DOM qu'une seule fois à la fin (Performance)
+      const docFragAssets = document.createDocumentFragment();
+      const docFragTargets = document.createDocumentFragment();
+
+      for (let i = 0; i < MAX_TARGETS; i++) {
+        const [hasGlb, hasMp3, hasMp4] = await Promise.all([
+          checkFileExists(`${ASSETS_PATH}${i}.glb`),
+          checkFileExists(`${ASSETS_PATH}${i}.mp3`),
+          checkFileExists(`${ASSETS_PATH}${i}.mp4`)
+        ]);
+
+        if (!hasGlb && !hasMp3 && !hasMp4) continue;
+        count++;
+
+        const targetEl = document.createElement('a-entity');
+        targetEl.setAttribute('mindar-image-target', `targetIndex: ${i}`);
+        
+        // 1. VIDEO
+        if (hasMp4) {
+          const vidId = `video-${i}`;
+          const video = document.createElement('video');
+          video.id = vidId;
+          video.src = `${ASSETS_PATH}${i}.mp4`;
+          video.setAttribute('preload', 'auto');
+          video.setAttribute('loop', 'true');
+          video.setAttribute('crossorigin', 'anonymous');
+          video.setAttribute('playsinline', '');
+          video.setAttribute('webkit-playsinline', '');
+          video.muted = true; 
+          video.setAttribute('muted', '');
+          // Astuce Perf : display none pour éviter le reflow, mais attention sur certains Android
+          // On le gère via CSS ou JS si besoin
+          
+          docFragAssets.appendChild(video);
+          targetEl.dataset.videoId = vidId;
+
+          const videoPlane = document.createElement('a-entity');
+          videoPlane.setAttribute('geometry', 'primitive: plane; width: 1; height: 0.56');
+          videoPlane.setAttribute('position', '0 0 0');
+          videoPlane.setAttribute('material', `shader: chromakey; src: #${vidId}; color: 0 1 0; transparent: true`);
+          
+          targetEl.appendChild(videoPlane);
+
+          // Écouteur Optimisé : on supprime l'event listener après usage (once: true)
+          video.addEventListener('loadedmetadata', () => {
+             const newHeight = video.videoHeight / video.videoWidth;
+             videoPlane.setAttribute('geometry', {primitive: 'plane', width: 1, height: newHeight});
+          }, { once: true });
+        }
+
+        // 2. AUDIO
+        if (hasMp3) {
+          const audio = document.createElement('audio');
+          audio.id = `audio-${i}`;
+          audio.src = `${ASSETS_PATH}${i}.mp3`;
+          audio.setAttribute('loop', 'true');
+          docFragAssets.appendChild(audio);
+          targetEl.dataset.audioId = audio.id;
+        }
+
+        // 3. GLB
+        if (hasGlb) {
+          const model = document.createElement('a-entity');
+          model.setAttribute('gltf-model', `${ASSETS_PATH}${i}.glb`);
+          model.setAttribute('scale', '0.5 0.5 0.5');
+          model.setAttribute('animation-mixer', '');
+          targetEl.appendChild(model);
+        }
+
+        targetEl.setAttribute('smart-target', '');
+        docFragTargets.appendChild(targetEl);
+      }
+
+      // Injection unique dans le DOM (Meilleure performance)
+      assetsContainer.appendChild(docFragAssets);
+      targetsContainer.appendChild(docFragTargets);
+
+      statusText.innerText = count > 0 ? "Prêt. Cliquez pour démarrer." : "Aucun asset trouvé.";
+      if (count > 0) startBtn.style.display = 'block';
+    }
+
+    initExperience();
+
+    startBtn.addEventListener('click', () => {
+      document.getElementById('overlay').classList.add('hidden');
+      
+      const vids = document.querySelectorAll('video');
+      vids.forEach(v => {
+        // Promise chain pour éviter les erreurs de race condition
+        const p = v.play();
+        if(p !== undefined) {
+            p.then(() => v.pause()).catch(e => console.error(e));
+        }
+      });
+
+      const arSys = document.querySelector('a-scene').systems['mindar-image-system'];
+      if(arSys) arSys.start();
+    });
+  </script>
 </body>
 </html>
